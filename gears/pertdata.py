@@ -213,43 +213,22 @@ class PertData:
         if not os.path.exists(pyg_path):
             os.mkdir(pyg_path)
         dataset_fname = os.path.join(pyg_path, 'cell_graphs.pkl')
-        batch_files = [f for f in os.listdir(pyg_path) if '_batch_' in f]
-        
-        if os.path.isfile(dataset_fname) or len(batch_files):
+                
+        if os.path.isfile(dataset_fname):
             print_sys("Local copy of pyg dataset is detected. Loading...")
-            # self.dataset_processed = pickle.load(open(dataset_fname, "rb")
-            #
-            batch_files = [f for f in os.listdir(pyg_path) if '_batch_' in f]
-            if batch_files:
-                print_sys("Batch files detected. Loading from batches...")
-                self.dataset_processed = {}
-                for batch_file in sorted(batch_files, key=lambda x: int(x.split('_')[-1].split('.')[0])):
-                    batch_path = os.path.join(pyg_path, batch_file)
-                    batch_data = joblib.load(batch_path)
-                    self.dataset_processed.update(batch_data)
-
-                for key, data_list in self.dataset_processed.items():
-                    for data in data_list:
-                        data.x = torch.reshape(data.x,(-1, 1))
-                        data.y = torch.reshape(data.y,(1, -1))
-                print_sys("Done loading from batches!")
-            else:
-                print_sys("No batch files detected. Loading from single file...")
-                self.dataset_processed = joblib.load(dataset_fname)
+            self.dataset_processed = pickle.load(open(dataset_fname, "rb"))        
             print_sys("Done!")
         else:
             self.ctrl_adata = self.adata[self.adata.obs['condition'] == 'ctrl']
-            # self.ctrl_path = os.path.join(data_path, 'ctrl.h5ad')
-            # self.ctrl_adata.write_h5ad(self.ctrl_path)
             self.gene_names = self.adata.var.gene_name
             
             
             print_sys("Creating pyg object for each cell in the data...")
             self.create_dataset_file()
             print_sys("Saving new dataset pyg object at " + dataset_fname) 
-            # joblib.dump(self.dataset_processed, dataset_fname)
-            dump_dict_in_batches(self.dataset_processed, 500, dataset_fname)    
+            pickle.dump(self.dataset_processed, open(dataset_fname, "wb"))    
             print_sys("Done!")
+
             
     def new_data_process(self, dataset_name,
                          adata = None,

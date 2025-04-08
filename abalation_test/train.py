@@ -66,7 +66,7 @@ def train(cfg: DictConfig):
     if not no_perturb:
 
         api = wandb.Api()
-        run = api.run(f"{run.entity}/{run.project}/{gears_model.wandb.run.id}")
+        run = api.run(f"{gears_model.wandb.run.entity}/{gears_model.wandb.run.project}/{gears_model.wandb.run.id}")
 
 
         # set up and train a model
