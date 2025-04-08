@@ -1,0 +1,18 @@
+command:
+  - ${env}
+  - python
+  - ${program}
+  - ${args_no_hyphens}
+entity: valencelabs
+method: grid
+name: GEARS
+parameters:
+  seed:
+    values:
+      - 0
+      - 5
+      - 1000
+      - 5000
+      - 10000
+program: /mnt/ps/home/CORP/wilson.tu/project/transcriptomic/GEARS/abalation_test/train.py
+project: GEARS

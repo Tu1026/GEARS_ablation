@@ -10,7 +10,6 @@ from torch_geometric.data import Data
 from zipfile import ZipFile
 import tarfile
 from sklearn.linear_model import TheilSenRegressor
-from dcor import distance_correlation
 from multiprocessing import Pool
 
 def parse_single_pert(i):
@@ -491,6 +490,8 @@ def get_coeffs(singles_expr, first_expr, second_expr, double_expr):
         double_expr (np.array): double perturbation expression
 
     """
+    from dcor import distance_correlation
+    
     results = {}
     results['ts'] = TheilSenRegressor(fit_intercept=False,
                           max_subpopulation=1e5,

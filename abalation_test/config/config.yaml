@@ -1,0 +1,24 @@
+# defaults:
+#   - override hydra/sweeper: basic
+#   - override hydra/launcher: submitit_slurm
+
+# no_perturb: True
+# data_cache: "input your data cache path here"
+data_cache: "/ubc/cs/home/l/linshuan/wtu/projects/gspp_data/data_xcell"
+
+
+
+no_perturb: False
+ablation_mode: False
+dataset_name: "nadig_hepg2"
+non_linearity: True
+cross_gene_module: True
+
+seed: 0
+epochs: 20
+model: "gears"
+gnn: "SGConv"
+tags: [GEARS_Baseline-seed]
+
+
+

@@ -42,6 +42,7 @@ def evaluate(loader, model, uncertainty, device):
                 pred_de.append(p[itr, de_idx])
                 truth_de.append(t[itr, de_idx])
 
+    print(f"A total of {len(pert_cat)} perturbations were evaluated")
     # all genes
     results['pert_cat'] = np.array(pert_cat)
     pred = torch.stack(pred)
@@ -84,6 +85,8 @@ def compute_metrics(results):
             
         for m, fct in metric2fct.items():
             if m == 'pearson':
+                test = np.all(results['pred_de'][p_idx]== results['pred_de'][0])
+                test1 = np.all(results['truth_de'][p_idx]== results['truth_de'][0])
                 val = fct(results['pred'][p_idx].mean(0), results['truth'][p_idx].mean(0))[0]
                 if np.isnan(val):
                     val = 0
@@ -142,7 +145,8 @@ def non_zero_analysis(adata, test_res):
     for i, j in conditions2index.items():
         condition2mean_expression[i] = np.mean(adata.X[j], axis = 0)
     pert_list = np.array(list(condition2mean_expression.keys()))
-    mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.toarray().shape[1])
+    mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.shape[1])
+    # mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.toarray().shape[1])
     ctrl = mean_expression[np.where(pert_list == 'ctrl')[0]]
     
     gene_list = adata.var['gene_name'].values
@@ -249,7 +253,8 @@ def non_dropout_analysis(adata, test_res):
     for i, j in conditions2index.items():
         condition2mean_expression[i] = np.mean(adata.X[j], axis = 0)
     pert_list = np.array(list(condition2mean_expression.keys()))
-    mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.toarray().shape[1])
+    # mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.toarray().shape[1])
+    mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.shape[1])
     ctrl = mean_expression[np.where(pert_list == 'ctrl')[0]]
     
     gene_list = adata.var['gene_name'].values
@@ -379,7 +384,8 @@ def deeper_analysis(adata, test_res, de_column_prefix = 'rank_genes_groups_cov',
     for i, j in conditions2index.items():
         condition2mean_expression[i] = np.mean(adata.X[j], axis = 0)
     pert_list = np.array(list(condition2mean_expression.keys()))
-    mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.toarray().shape[1])
+    mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.shape[1])
+    # mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.toarray().shape[1])
     ctrl = mean_expression[np.where(pert_list == 'ctrl')[0]]
     
     if most_variable_genes is None:

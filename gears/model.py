@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Sequential, Linear, ReLU
 
-from torch_geometric.nn import SGConv
+from torch_geometric.nn import SGConv, GATConv
 
 class MLP(torch.nn.Module):
 
@@ -55,6 +55,8 @@ class GEARS_Model(torch.nn.Module):
         self.num_layers_gene_pos = args['num_gene_gnn_layers']
         self.no_perturb = args['no_perturb']
         self.pert_emb_lambda = 0.2
+        self.non_linearity = args["non_linearity"]
+        
         
         # perturbation positional embedding added only to the perturbed genes
         self.pert_w = nn.Linear(1, hidden_size)
@@ -66,7 +68,7 @@ class GEARS_Model(torch.nn.Module):
         # transformation layer
         self.emb_trans = nn.ReLU()
         self.pert_base_trans = nn.ReLU()
-        self.transform = nn.ReLU()
+        self.transform = nn.ReLU() if self.non_linearity else nn.Identity()
         self.emb_trans_v2 = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
         self.pert_fuse = MLP([hidden_size, hidden_size, hidden_size], last_layer_act='ReLU')
         
@@ -76,8 +78,10 @@ class GEARS_Model(torch.nn.Module):
 
         self.emb_pos = nn.Embedding(self.num_genes, hidden_size, max_norm=True)
         self.layers_emb_pos = torch.nn.ModuleList()
+        self.gnn_type = args['gnn']
+        gnn = SGConv if args['gnn'] == "SGConv" else GATConv
         for i in range(1, self.num_layers_gene_pos + 1):
-            self.layers_emb_pos.append(SGConv(hidden_size, hidden_size, 1))
+            self.layers_emb_pos.append(gnn(hidden_size, hidden_size, 1))
         
         ### perturbation gene ontology GNN
         self.G_sim = args['G_go'].to(args['device'])
@@ -85,7 +89,7 @@ class GEARS_Model(torch.nn.Module):
 
         self.sim_layers = torch.nn.ModuleList()
         for i in range(1, self.num_layers + 1):
-            self.sim_layers.append(SGConv(hidden_size, hidden_size, 1))
+            self.sim_layers.append(gnn(hidden_size, hidden_size, 1))
         
         # decoder shared MLP
         self.recovery_w = MLP([hidden_size, hidden_size*2, hidden_size], last_layer_act='linear')
@@ -116,18 +120,32 @@ class GEARS_Model(torch.nn.Module):
         # uncertainty mode
         if self.uncertainty:
             self.uncertainty_w = MLP([hidden_size, hidden_size*2, hidden_size, 1], last_layer_act='linear')
+            
+        # # # # self.gene_indicies = args['gene_indicies'].to(args['device'])
+        # # # self.pert_indicies = args['pert_indicies'].to(args['device'])
+        # # self.G_coexpress = self.gene_indicies[self.G_coexpress]
+        # self.G_sim = self.pert_indicies[self.G_sim]
+        self.cross_gene_module = args["cross_gene_module"]
+        
+        
         
     def forward(self, data):
         """
-        Forward pass of the model
+            Forward pass of the model
         """
         x, pert_idx = data.x, data.pert_idx
         if self.no_perturb:
+            num_graphs = len(data.batch.unique())
+            self.num_graphs = num_graphs
             out = x.reshape(-1,1)
+            self.out = out.clone().detach()
+            self.pert_global_emb = self.pert_emb(torch.LongTensor(list(range(self.num_perts))).to(self.args['device']))    
+            
             out = torch.split(torch.flatten(out), self.num_genes)           
             return torch.stack(out)
         else:
             num_graphs = len(data.batch.unique())
+            self.num_graphs = num_graphs
 
             ## get base gene embeddings
             emb = self.gene_emb(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))        
@@ -136,12 +154,13 @@ class GEARS_Model(torch.nn.Module):
 
             pos_emb = self.emb_pos(torch.LongTensor(list(range(self.num_genes))).repeat(num_graphs, ).to(self.args['device']))
             for idx, layer in enumerate(self.layers_emb_pos):
-                pos_emb = layer(pos_emb, self.G_coexpress, self.G_coexpress_weight)
+                pos_emb = layer(pos_emb, self.G_coexpress, self.G_coexpress_weight) if self.gnn_type == "SGConv" else layer(pos_emb, self.G_coexpress)
                 if idx < len(self.layers_emb_pos) - 1:
                     pos_emb = pos_emb.relu()
 
             base_emb = base_emb + 0.2 * pos_emb
             base_emb = self.emb_trans_v2(base_emb)
+            self.base_emb = base_emb.clone().detach()  
 
             ## get perturbation index and embeddings
 
@@ -156,10 +175,12 @@ class GEARS_Model(torch.nn.Module):
 
             ## augment global perturbation embedding with GNN
             for idx, layer in enumerate(self.sim_layers):
-                pert_global_emb = layer(pert_global_emb, self.G_sim, self.G_sim_weight)
+                pert_global_emb = layer(pert_global_emb, self.G_sim, self.G_sim_weight) if self.gnn_type == "SGConv" else layer(pos_emb, self.G_coexpress)
                 if idx < self.num_layers - 1:
                     pert_global_emb = pert_global_emb.relu()
 
+            self.pert_global_emb = pert_global_emb.clone().detach()
+            
             ## add global perturbation embedding to each gene in each cell in the batch
             base_emb = base_emb.reshape(num_graphs, self.num_genes, -1)
 
@@ -182,6 +203,7 @@ class GEARS_Model(torch.nn.Module):
                     for idx, j in enumerate(pert_track.keys()):
                         base_emb[j] = base_emb[j] + emb_total[idx]
 
+            # self.combine_before_mlp = base_emb.clone()
             base_emb = base_emb.reshape(num_graphs * self.num_genes, -1)
             base_emb = self.bn_pert_base(base_emb)
 
@@ -193,16 +215,22 @@ class GEARS_Model(torch.nn.Module):
             w = torch.sum(out, axis = 2)
             out = w + self.indv_b1
 
+            self.out = out.clone().detach()
+            
             # Cross gene
-            cross_gene_embed = self.cross_gene_state(out.reshape(num_graphs, self.num_genes, -1).squeeze(2))
-            cross_gene_embed = cross_gene_embed.repeat(1, self.num_genes)
+            if self.cross_gene_module:
+                cross_gene_embed = self.cross_gene_state(out.reshape(num_graphs, self.num_genes, -1).squeeze(2))
+                cross_gene_embed = cross_gene_embed.repeat(1, self.num_genes)
 
-            cross_gene_embed = cross_gene_embed.reshape([num_graphs,self.num_genes, -1])
-            cross_gene_out = torch.cat([out, cross_gene_embed], 2)
+                cross_gene_embed = cross_gene_embed.reshape([num_graphs,self.num_genes, -1])
+                cross_gene_out = torch.cat([out, cross_gene_embed], 2)
 
-            cross_gene_out = cross_gene_out * self.indv_w2
-            cross_gene_out = torch.sum(cross_gene_out, axis=2)
-            out = cross_gene_out + self.indv_b2        
+                cross_gene_out = cross_gene_out * self.indv_w2
+                cross_gene_out = torch.sum(cross_gene_out, axis=2)
+                out = cross_gene_out + self.indv_b2  
+                
+                self.cross_out = out.clone().detach()
+                      
             out = out.reshape(num_graphs * self.num_genes, -1) + x.reshape(-1,1)
             out = torch.split(torch.flatten(out), self.num_genes)
 

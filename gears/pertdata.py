@@ -8,12 +8,24 @@ import scanpy as sc
 from tqdm import tqdm
 
 import warnings
-warnings.filterwarnings("ignore")
+# warnings.filterwarnings("ignore")
 sc.settings.verbosity = 0
 
 from .data_utils import get_DE_genes, get_dropout_non_zero_genes, DataSplitter
 from .utils import print_sys, zip_data_download_wrapper, dataverse_download,\
                   filter_pert_in_go, get_genes_from_perts, tar_data_download_wrapper
+import joblib
+
+def dump_dict_in_batches(dictionary, batch_size, base_filename):
+    keys = list(dictionary.keys())
+    num_batches = len(keys) // batch_size + (1 if len(keys) % batch_size != 0 else 0)
+    
+    for i in range(num_batches):
+        batch_keys = keys[i * batch_size:(i + 1) * batch_size]
+        batch = {key: dictionary[key] for key in batch_keys}
+        batch_filename = f"{base_filename}_batch_{i}.pkl"
+        joblib.dump(batch, batch_filename)
+        print(f"Dumped batch {i + 1}/{num_batches} to {batch_filename}")
 
 class PertData:
     """
@@ -146,16 +158,19 @@ class PertData:
         None
 
         """
-        
+
+        print(f"data_name: {data_name}")
+        print(f"data_path: {data_path}")
         if data_name in ['norman', 'adamson', 'dixit', 
                          'replogle_k562_essential', 
-                         'replogle_rpe1_essential']:
+                         'replogle_rpe1_essential',
+                         'nadig_jurkat', 'nadig_hepg2']:
             ## load from harvard dataverse
             if data_name == 'norman':
                 url = 'https://dataverse.harvard.edu/api/access/datafile/6154020'
             elif data_name == 'adamson':
                 url = 'https://dataverse.harvard.edu/api/access/datafile/6154417'
-            elif data_name == 'dixit':
+            elif data_name == 'dixit':  
                 url = 'https://dataverse.harvard.edu/api/access/datafile/6154416'
             elif data_name == 'replogle_k562_essential':
                 ## Note: This is not the complete dataset and has been filtered
@@ -163,8 +178,10 @@ class PertData:
             elif data_name == 'replogle_rpe1_essential':
                 ## Note: This is not the complete dataset and has been filtered
                 url = 'https://dataverse.harvard.edu/api/access/datafile/7458694'
+            else:
+                url=None
             data_path = os.path.join(self.data_path, data_name)
-            zip_data_download_wrapper(url, data_path, self.data_path)
+            # zip_data_download_wrapper(url, data_path, self.data_path)
             self.dataset_name = data_path.split('/')[-1]
             self.dataset_path = data_path
             adata_path = os.path.join(data_path, 'perturb_processed.h5ad')
@@ -179,7 +196,7 @@ class PertData:
             raise ValueError("data attribute is either norman, adamson, dixit "
                              "replogle_k562 or replogle_rpe1 "
                              "or a path to an h5ad file")
-        
+        self.adata_path = adata_path
         self.set_pert_genes()
         print_sys('These perturbations are not in the GO graph and their '
                   'perturbation can thus not be predicted')
@@ -196,20 +213,42 @@ class PertData:
         if not os.path.exists(pyg_path):
             os.mkdir(pyg_path)
         dataset_fname = os.path.join(pyg_path, 'cell_graphs.pkl')
-                
-        if os.path.isfile(dataset_fname):
+        batch_files = [f for f in os.listdir(pyg_path) if '_batch_' in f]
+        
+        if os.path.isfile(dataset_fname) or len(batch_files):
             print_sys("Local copy of pyg dataset is detected. Loading...")
-            self.dataset_processed = pickle.load(open(dataset_fname, "rb"))        
+            # self.dataset_processed = pickle.load(open(dataset_fname, "rb")
+            #
+            batch_files = [f for f in os.listdir(pyg_path) if '_batch_' in f]
+            if batch_files:
+                print_sys("Batch files detected. Loading from batches...")
+                self.dataset_processed = {}
+                for batch_file in sorted(batch_files, key=lambda x: int(x.split('_')[-1].split('.')[0])):
+                    batch_path = os.path.join(pyg_path, batch_file)
+                    batch_data = joblib.load(batch_path)
+                    self.dataset_processed.update(batch_data)
+
+                for key, data_list in self.dataset_processed.items():
+                    for data in data_list:
+                        data.x = torch.reshape(data.x,(-1, 1))
+                        data.y = torch.reshape(data.y,(1, -1))
+                print_sys("Done loading from batches!")
+            else:
+                print_sys("No batch files detected. Loading from single file...")
+                self.dataset_processed = joblib.load(dataset_fname)
             print_sys("Done!")
         else:
             self.ctrl_adata = self.adata[self.adata.obs['condition'] == 'ctrl']
+            # self.ctrl_path = os.path.join(data_path, 'ctrl.h5ad')
+            # self.ctrl_adata.write_h5ad(self.ctrl_path)
             self.gene_names = self.adata.var.gene_name
             
             
             print_sys("Creating pyg object for each cell in the data...")
             self.create_dataset_file()
             print_sys("Saving new dataset pyg object at " + dataset_fname) 
-            pickle.dump(self.dataset_processed, open(dataset_fname, "wb"))    
+            # joblib.dump(self.dataset_processed, dataset_fname)
+            dump_dict_in_batches(self.dataset_processed, 500, dataset_fname)    
             print_sys("Done!")
             
     def new_data_process(self, dataset_name,
@@ -232,13 +271,15 @@ class PertData:
         None
 
         """
-        
+        if 'cell_line' in adata.obs.columns.values:
+            adata.obs['cell_type'] = adata.obs['cell_line']
         if 'condition' not in adata.obs.columns.values:
             raise ValueError("Please specify condition")
         if 'gene_name' not in adata.var.columns.values:
             raise ValueError("Please specify gene name")
         if 'cell_type' not in adata.obs.columns.values:
             raise ValueError("Please specify cell type")
+        
         
         dataset_name = dataset_name.lower()
         self.dataset_name = dataset_name
@@ -359,7 +400,8 @@ class PertData:
                                                 only_test_set_perts = only_test_set_perts
                                                )
                 subgroup_path = split_path[:-4] + '_subgroup.pkl'
-                pickle.dump(subgroup, open(subgroup_path, "wb"))
+                print_sys("Saving new subgroup at " + subgroup_path)
+                joblib.dump(subgroup, subgroup_path)
                 self.subgroup = subgroup
                 
             elif split[:5] == 'combo':
@@ -453,7 +495,10 @@ class PertData:
             for i in splits:
                 cell_graphs[i] = []
                 for p in self.set2conditions[i]:
-                    cell_graphs[i].extend(self.dataset_processed[p])
+                    if p not in self.dataset_processed:
+                        print("Not found: ", p)
+                    else:
+                        cell_graphs[i].extend(self.dataset_processed[p])
 
             print_sys("Creating dataloaders....")
             
@@ -500,13 +545,13 @@ class PertData:
             
         return pert_idx
 
-    def create_cell_graph(self, X, y, de_idx, pert, pert_idx=None):
+    def create_cell_graph(self, X, y, de_idx, pert,idx, pert_idx=None):
         """
         Create a cell graph from a given cell
 
         Parameters
         ----------
-        X: np.ndarray
+        X: np.ndrehape
             Gene expression matrix
         y: np.ndarray
             Label vector
@@ -528,7 +573,7 @@ class PertData:
         if pert_idx is None:
             pert_idx = [-1]
         return Data(x=feature_mat, pert_idx=pert_idx,
-                    y=torch.Tensor(y), de_idx=de_idx, pert=pert)
+                    y=torch.Tensor(y), de_idx=de_idx, pert=pert, idx=idx)
 
     def create_cell_graph_dataset(self, split_adata, pert_category,
                                   num_samples=1):
@@ -552,7 +597,8 @@ class PertData:
 
         """
 
-        num_de_genes = 20        
+        num_de_genes = 20     
+        # adata_ = split_adata   
         adata_ = split_adata[split_adata.obs['condition'] == pert_category]
         if 'rank_genes_groups_cov_all' in adata_.uns:
             de_genes = adata_.uns['rank_genes_groups_cov_all']
@@ -562,7 +608,7 @@ class PertData:
             num_de_genes = 1
         Xs = []
         ys = []
-
+        idxs = []
         # When considering a non-control perturbation
         if pert_category != 'ctrl':
             # Get the indices of applied perturbation
@@ -575,27 +621,29 @@ class PertData:
                 np.array(de_genes[pert_de_category][:num_de_genes])))[0]
             else:
                 de_idx = [-1] * num_de_genes
-            for cell_z in adata_.X:
+            for cell_z, idx in zip(adata_.X, adata_.obs.index):
                 # Use samples from control as basal expression
                 ctrl_samples = self.ctrl_adata[np.random.randint(0,
                                         len(self.ctrl_adata), num_samples), :]
                 for c in ctrl_samples.X:
                     Xs.append(c)
                     ys.append(cell_z)
+                    idxs.append(idx)
 
         # When considering a control perturbation
         else:
             pert_idx = None
             de_idx = [-1] * num_de_genes
-            for cell_z in adata_.X:
+            for cell_z, idx in zip(adata_.X, adata_.obs.index):
                 Xs.append(cell_z)
                 ys.append(cell_z)
+                idxs.append(idx) 
 
         # Create cell graphs
         cell_graphs = []
-        for X, y in zip(Xs, ys):
+        for X, y, idx in zip(Xs, ys, idxs):
             cell_graphs.append(self.create_cell_graph(X.toarray(),
-                                y.toarray(), de_idx, pert_category, pert_idx))
+                                y.toarray(), de_idx, pert_category, idx, pert_idx ))
 
         return cell_graphs
 
@@ -608,3 +656,87 @@ class PertData:
         for p in tqdm(self.adata.obs['condition'].unique()):
             self.dataset_processed[p] = self.create_cell_graph_dataset(self.adata, p)
         print_sys("Done!")
+        # from .improvements import parallel_create_cell_graph_dataset 
+        # import submitit
+
+
+
+        # print_sys("Creating dataset file...")
+        # self.dataset_processed = {}
+
+        # # Initialize the submitit executor
+        # executor = submitit.AutoExecutor(folder="submitit_logs")
+        # executor.update_parameters(timeout_min=20, mem_gb=300, cpus_per_task=2, gpus_per_node=1)
+
+        # # Submit jobs for each unique condition
+        # jobs = []
+        # with executor.batch():
+        #     for p in tqdm(self.adata.obs['condition'].unique()):
+                
+        #         job = executor.submit(parallel_create_cell_graph_dataset, self.adata_path, p, self.pert_names, self.ctrl_path
+        #                             )
+        #         jobs.append((p, job))
+
+        # # Collect the results
+        # for p, job in tqdm(jobs):
+        #     try:
+        #         self.dataset_processed[p] = job.result()
+        #     except Exception as e:
+        #         print_sys(f"Job for condition {p} failed: {e}")
+        #         print_sys("Retrying job...")
+        #         job.resubmit()  # Manually resubmit the job if it failed
+        #         self.dataset_processed[p] = job.result()  # Get the result after retry
+
+
+        # print_sys("Done!")
+        
+        """
+        Create dataset file for each perturbation condition using Dask and SLURM with retry logic.
+        """
+        # from .improvements import parallel_create_cell_graph_dataset
+        # from dask.distributed import Client
+        # from dask_jobqueue import SLURMCluster
+        # from dask.distributed import as_completed
+        
+        # print_sys("Creating dataset file...")
+        # self.dataset_processed = {}
+
+        # # Set up Dask SLURMCluster
+        # cluster = SLURMCluster(
+        #     cores=1,           # Number of cores per task
+        #     memory="300GB",    # Memory per task
+        #     processes=1,       # Number of processes per node
+        #     walltime="00:20:00",  # Maximum runtime for each job
+        #     job_extra=["--gpus-per-node=1"]  # Extra SLURM arguments for GPU usage
+        # )
+        # num_conditions = len(self.adata.obs['condition'].unique())
+        # cluster.scale(1)  # Scale based on number of conditions
+
+        # client = Client(cluster)
+
+        # # Submit jobs for each unique condition
+        # futures = []
+        # for p in self.adata.obs['condition'].unique():
+        #     future = client.submit(parallel_create_cell_graph_dataset, self.adata_path, p, self.pert_names, self.ctrl_path)
+        #     futures.append((p, future))
+
+        # # Collect results and retry failed jobs
+        # for p, future in tqdm(as_completed(futures)):
+        #     attempts = 0
+        #     max_retries = 3
+        #     while attempts < max_retries:
+        #         try:
+        #             self.dataset_processed[p] = future.result()  # Try to get the result
+    #             break  # Success, exit the retry loop
+        #         except Exception as e:
+        #             attempts += 1
+        #             print_sys(f"Job for condition {p} failed (Attempt {attempts}/{max_retries}): {e}")
+        #             if attempts < max_retries:
+        #                 print_sys("Retrying job...")
+        #                 future = client.submit(parallel_create_cell_graph_dataset, self.adata_path, p, self.pert_names, self.ctrl_path)
+        #             else:
+        #                 print_sys(f"Job for condition {p} failed after {max_retries} attempts. Skipping...")
+        #                 raise(f"Something really fucked up happened here with {p}")
+
+        # print_sys("Done!")
+        # client.close()

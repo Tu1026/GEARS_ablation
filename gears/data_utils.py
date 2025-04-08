@@ -82,6 +82,7 @@ def get_dropout_non_zero_genes(adata):
         condition2mean_expression[i] = np.mean(adata.X[j], axis = 0)
     pert_list = np.array(list(condition2mean_expression.keys()))
     mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.toarray().shape[1])
+    # mean_expression = np.array(list(condition2mean_expression.values())).reshape(len(adata.obs.condition.unique()), adata.X.shape[1])
     ctrl = mean_expression[np.where(pert_list == 'ctrl')[0]]
     
     ## in silico modeling and upperbounding
@@ -149,52 +150,79 @@ class DataSplitter():
         Split dataset and adds split as a column to the dataframe
         Note: split categories are train, val, test
         """
+        print("Starting split_data function")
         np.random.seed(seed=seed)
         unique_perts = [p for p in self.adata.obs['condition'].unique() if
                         p != 'ctrl']
+        print(f"Unique perturbations: {unique_perts}")
         
         if self.split_type == 'simulation':
+            print("Splitting data using simulation method")
             train, test, test_subgroup = self.get_simulation_split(unique_perts,
                                                                   train_gene_set_size,
                                                                   combo_seen2_train_frac, 
                                                                   seed, test_perts, only_test_set_perts)
+            print(f"Train set: {train}")
+            print(f"Test set: {test}")
             train, val, val_subgroup = self.get_simulation_split(train,
                                                                   0.9,
                                                                   0.9,
                                                                   seed)
+            print(f"Validation set: {val}")
             ## adding back ctrl to train...
             train.append('ctrl')
+            print("Added 'ctrl' to train set")
         elif self.split_type == 'simulation_single':
+            print("Splitting data using simulation_single method")
             train, test, test_subgroup = self.get_simulation_split_single(unique_perts,
                                                                   train_gene_set_size,
                                                                   seed, test_perts, only_test_set_perts)
+            print(f"Train set: {train}")
+            print(f"Test set: {test}")
             train, val, val_subgroup = self.get_simulation_split_single(train,
                                                                   0.9,
                                                                   seed)
+            print(f"Validation set: {val}")
         elif self.split_type == 'no_test':
+            print("Splitting data using no_test method")
             train, val = self.get_split_list(unique_perts,
                                           test_size=val_size)      
+            print(f"Train set: {train}")
+            print(f"Validation set: {val}")
         else:
+            print("Splitting data using default method")
             train, test = self.get_split_list(unique_perts,
                                           test_pert_genes=test_pert_genes,
                                           test_perts=test_perts,
                                           test_size=test_size)
-            
+            print(f"Train set: {train}")
+            print(f"Test set: {test}")
             train, val = self.get_split_list(train, test_size=val_size)
+            print(f"Validation set: {val}")
 
         map_dict = {x: 'train' for x in train}
         map_dict.update({x: 'val' for x in val})
         if self.split_type != 'no_test':
             map_dict.update({x: 'test' for x in test})
         map_dict.update({'ctrl': 'train'})
+        print(f"Mapping dictionary: {map_dict}")
 
-        self.adata.obs[split_name] = self.adata.obs['condition'].map(map_dict)
+        chunk_size = 1000  # Adjust the chunk size as needed
+        condition = self.adata.obs['condition']
+        chunks = [condition.iloc[i:i + chunk_size] for i in range(0, self.adata.obs.shape[0], chunk_size)]
+        mapped_chunks = [chunk.map(map_dict) for chunk in chunks]
+        print("Mapped chunks")
+        self.adata.obs[split_name] = pd.concat(mapped_chunks, axis=0)
+        # self.adata.obs[split_name] = self.adata.obs['condition'].map(map_dict)
+        print(f"Updated adata.obs with split_name: {split_name}")
 
         if self.split_type == 'simulation':
+            print("Returning adata and test/val subgroups")
             return self.adata, {'test_subgroup': test_subgroup, 
                                 'val_subgroup': val_subgroup
                                }
         else:
+            print("Returning adata")
             return self.adata
     
     def get_simulation_split_single(self, pert_list, train_gene_set_size = 0.85, seed = 1, test_set_perts = None, only_test_set_perts = False):
