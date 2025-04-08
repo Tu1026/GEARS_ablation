@@ -7,3 +7,4 @@ log_folder
 outputs
 wandb
 *.egg-info
+.mypy_cache/
